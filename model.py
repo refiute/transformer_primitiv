@@ -4,7 +4,6 @@ import math
 import numpy as np
 
 from primitiv import Parameter, Model, Shape
-from primitiv import tensor_functions as TF
 from primitiv import functions as F
 from primitiv import initializers as I
 

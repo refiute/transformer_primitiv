@@ -14,9 +14,10 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
-from primitiv import Device, Graph, Optimizer
+from primitiv import Device, Graph, Optimizer, Shape
 from primitiv import devices as D
 from primitiv import optimizers as O
+from primitiv import functions as F
 
 import sentencepiece as spm
 
@@ -137,13 +138,15 @@ def test(model, config):
                       "iterations.", file=sys.stderr)
                 trg_ids.append(eos_id)
                 break
+
             out = model.decode(src_encode, trg_ids, src_mask, subsequent_mask(len(trg_ids)), train=False)
-            y = np.argmax(out.to_ndarray()[:, -1], 0)
+            y = F.pick(out, [len(trg_ids) - 1], 0)
+            y = np.array(F.reshape(y, Shape([y.shape()[1]])).argmax(0))
             trg_ids.append(y)
         hyp.extend([hyp[:np.where(hyp == eos_id)[0][0]]for hyp in np.array(trg_ids).T])
 
     for ids in hyp:
-        sent = tokenizer.DecodeIds(ids)
+        sent = tokenizer.DecodeIds(ids.tolist())
         print(sent)
 
 
@@ -160,13 +163,13 @@ def main(config):
 
     prefix = config['model_prefix']
     if mode == 'train':
-        model = Transformer(config['n_head'], config['n_stacks'], config['dropout'], config['generation_limit'])
+        model = Transformer(config['n_heads'], config['n_stacks'], config['dropout'], config['generation_limit'])
         model.init(config['vocabulary_size'], config['d_model'], config['d_ff'])
         optimizer = O.Adam(alpha=1, beta2=0.98, eps=1e-9)
         train(model, optimizer, config, 1e10)
     elif mode == 'resume':
         print('loading model/optimizer ... ', end='', file=sys.stderr, flush=True)
-        model = Transformer(config['n_head'], config['n_stacks'], config['dropout'], config['generation_limit'])
+        model = Transformer(config['n_heads'], config['n_stacks'], config['dropout'], config['generation_limit'])
         model.load(prefix + '.model')
         optimizer = O.Adam(alpha=1, beta2=0.98, eps=1e-9)
         optimizer.load(prefix + '.optimizer')
@@ -175,7 +178,7 @@ def main(config):
         print('done.', file=sys.stderr, flush=True)
         train(model, optimizer, valid_ppl)
     elif mode == 'test':
-        model = Transformer(config['n_head'], config['n_stacks'], config['dropout'], config['generation_limit'])
+        model = Transformer(config['n_heads'], config['n_stacks'], config['dropout'], config['generation_limit'])
         model.load(prefix + '.model')
         test(model, config)
 
