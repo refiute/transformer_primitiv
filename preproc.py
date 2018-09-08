@@ -33,19 +33,26 @@ def preproc(config):
         for idx in random_idx:
             ofs.write(corpus[idx])
 
-    model_prefix = subword_dir / 'model'
+    model_prefix = subword_dir / 'spm'
     spm.SentencePieceTrainer.Train('--input=%s --vocab_size=%s --model_prefix=%s' %
                                    (train_data_path, config['vocabulary_size'], model_prefix))
 
     sp = spm.SentencePieceProcessor()
     sp.Load(str(model_prefix.with_suffix('.model')))
-    sp.SetEncodeExtraOptions('bos:eos')
 
-    files = [config['train_source'], config['train_target'], config['dev_source'],
-                  config['dev_target'], config['test_source'], config['test_target']]
-    for filename in files:
+    src_files = [config['train_source'], config['dev_source'], config['test_source']]
+    for filename in src_files:
         orig_file = prefix / filename
         subword_file = subword_dir / filename
         with open(orig_file) as ifs, open(subword_file, 'w', encoding='utf-8') as ofs:
             for line in ifs:
-                print(' '.join(map(str, sp.EncodeAsIds(line.strip()))), file=ofs)
+                print(' '.join(map(str, sp.EncodeAsPieces(line.strip()))), file=ofs)
+
+    sp.SetEncodeExtraOptions('bos:eos')
+    trg_files = [config['train_target'], config['dev_target'], config['test_target']]
+    for filename in trg_files:
+        orig_file = prefix / filename
+        subword_file = subword_dir / filename
+        with open(orig_file) as ifs, open(subword_file, 'w', encoding='utf-8') as ofs:
+            for line in ifs:
+                print(' '.join(map(str, sp.EncodeAsPieces(line.strip()))), file=ofs)

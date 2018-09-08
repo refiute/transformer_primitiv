@@ -4,8 +4,10 @@ import math
 import numpy as np
 
 from primitiv import Parameter, Model, Shape
+from primitiv import tensor_functions as TF
 from primitiv import functions as F
 from primitiv import initializers as I
+
 
 class LayerNorm(Model):
     def __init__(self, eps=1e-6):
@@ -16,38 +18,40 @@ class LayerNorm(Model):
         self.scan_attributes()
 
     def init(self, d_model):
-        self.pgain.init([d_model], I.Constant(1))
-        self.pbias.init([d_model], I.Constant(0))
+        self.pgain.init([1, d_model], I.Constant(1))
+        self.pbias.init([1, d_model], I.Constant(0))
 
     def __call__(self, x):
-        gain = F.parameter(self.pgain)
-        bias = F.parameter(self.pbias)
+        seq_len = x.shape()[0]
+        gain = F.broadcast(F.parameter(self.pgain), 0, seq_len)
+        bias = F.broadcast(F.parameter(self.pbias), 0, seq_len)
 
-        mean = F.mean(x, -1)
-        std = F.mean(x * x, -1) - mean * mean
+        dim = x.shape().depth()
+        mean = F.mean(x, dim)
+        std = F.mean(x * x, dim) - mean * mean
 
         return gain * (x - mean) / (std + self.eps) + bias
 
 class ScaledDotProductAttention():
-    def __init__(self, d_k, dropout):
+    def __init__(self, dropout):
         self.dropout = dropout
 
     def __call__(self, d_k, query, key, value, mask, train):
         attn = (query @ F.transpose(key)) / math.sqrt(d_k)
 
         if mask is not None:
-            attn -= -2000 * mask
+            mask = F.input(mask)
+            if attn.shape() != mask.shape():
+                mask = F.broadcast(mask, 0, attn.shape()[0])
+            attn -= 2000 * mask
 
-        attn_prob = F.softmax(attn)
-        attn_prob = F.dropout(attn_prob, self.dropout, train)
+        attn_prob = F.dropout(F.dropout(attn, 1, train), self.dropout, train)
         out = attn_prob @ value
 
         return out, attn_prob
 
 class MultiHeadAttention(Model):
     def __init__(self, n_heads, dropout):
-        assert d_model % n_heads == 0, 'd_model must be a multiple of n_heads.'
-
         self.dropout = dropout
         self.n_heads = n_heads
 
@@ -59,6 +63,8 @@ class MultiHeadAttention(Model):
         self.scan_attributes()
 
     def init(self, d_model):
+        assert d_model % self.n_heads == 0, 'd_model must be a multiple of n_heads.'
+
         self.pwq.init([d_model, d_model], I.XavierUniform())
         self.pwk.init([d_model, d_model], I.XavierUniform())
         self.pwv.init([d_model, d_model], I.XavierUniform())
@@ -73,20 +79,27 @@ class MultiHeadAttention(Model):
         d_model = wq.shape()[0]
         d_k = d_model // self.n_heads
 
-        seq_len = query.shape[0]
-        query = F.reshape(query @ wq, (seq_len, self.n_heads, d_k))
-        key = F.reshape(key @ wk, (seq_len, self.n_heads, d_k))
-        value = F.reshape(value @ wv, (seq_len, self.n_heads, d_k))
+        query_len = query.shape()[0]
+        query = F.reshape(query @ wq, Shape([query_len, self.n_heads, d_k]))
+        key_len = key.shape()[0]
+        key   = F.reshape(key   @ wk, Shape([key_len,   self.n_heads, d_k]))
+        value_len = value.shape()[0]
+        value = F.reshape(value @ wv, Shape([value_len, self.n_heads, d_k]))
 
-        # TODO: should use F.split when it will be implemented.
-        # shape = (n_heads, seq_len, d_k)
-        query = F.concat([F.slice(query, 1, d_k * i, d_k * (i + 1)) for i in range(self.n_heads)], 2)
-        key = F.concat([F.slice(key, 1, d_k * i, d_k * (i + 1)) for i in range(self.n_heads)], 2)
-        value = F.concat([F.slice(value, 1, d_k * i, d_k * (i + 1)) for i in range(self.n_heads)], 2)
+        query = [F.reshape(F.slice(query, 1, i, i + 1), Shape([query_len, d_k]))
+                 for i in range(self.n_heads)]
+        key   = [F.reshape(F.slice(key,   1, i, i + 1), Shape([key_len,   d_k]))
+                 for i in range(self.n_heads)]
+        value = [F.reshape(F.slice(value, 1, i, i + 1), Shape([value_len, d_k]))
+                 for i in range(self.n_heads)]
 
-        heads, attn_prob = self.attention(d_k, query, key, value, mask, train)
+        heads = []
+        for q, k, v in zip(query, key, value):
+            head, _ = self.attention(d_k, q, k, v, mask, train)
+            heads.append(head)
+        heads = F.concat(heads, 2)
 
-        return F.reshape(heads, (self.seq_len, d_model)) @ wo
+        return F.reshape(heads, Shape([query_len, d_model])) @ wo
 
 class PositionwiseFeedForward(Model):
     def __init__(self, dropout):
@@ -99,16 +112,17 @@ class PositionwiseFeedForward(Model):
         self.scan_attributes()
 
     def init(self, d_model, d_ff):
-        self.pw1.init([d_ff, d_model], I.XavierUniform())
-        self.pb1.init([d_ff], I.XavierUniform())
-        self.pw2.init([d_model, d_ff], I.XavierUniform())
-        self.pb2.init([d_model], I.XavierUniform())
+        self.pw1.init([d_model, d_ff], I.XavierUniform())
+        self.pb1.init([1, d_ff], I.XavierUniform())
+        self.pw2.init([d_ff, d_model], I.XavierUniform())
+        self.pb2.init([1, d_model], I.XavierUniform())
 
     def __call__(self, x, train):
+        seq_len = x.shape()[0]
         w1 = F.parameter(self.pw1)
-        b1 = F.parameter(self.pb1)
         w2 = F.parameter(self.pw2)
-        b2 = F.parameter(self.pb2)
+        b1 = F.broadcast(F.parameter(self.pb1), 0, seq_len)
+        b2 = F.broadcast(F.parameter(self.pb2), 0, seq_len)
 
         h = F.dropout(F.relu(x @ w1 + b1), self.dropout, train)
         return h @ w2 + b2
@@ -150,7 +164,7 @@ class TransformerEncoder(Model):
 
     def __call__(self, src, mask, train):
         for layer in self.layers:
-            x = layer(x, mask)
+            x = layer(src, mask, train)
         return x
 
 class TransformerDecoderLayer(Model):
@@ -177,7 +191,7 @@ class TransformerDecoderLayer(Model):
         self_attn = F.dropout(self.self_attention(x, x, x, trg_mask, train), self.dropout, train)
         self_attn_res = self.self_attn_norm(x + self_attn)
 
-        attn = F.dropout(self.attention(src, src, self_attn_res, train), self.dropout, train)
+        attn = F.dropout(self.attention(self_attn_res, src, src, src_mask, train), self.dropout, train)
         attn_res = self.attn_norm(self_attn_res + attn)
 
         ff = F.dropout(self.feed_forward(attn_res, train), self.dropout, train)
@@ -191,14 +205,24 @@ class TransformerDecoder(Model):
             self.add("decoder_layer" + str(idx), layer)
             self.layers.append(layer)
 
-    def init(self, d_model, d_ff):
+        self.pwhy = Parameter()
+        self.pby = Parameter()
+        self.scan_attributes()
+
+    def init(self, d_model, d_ff, vocab):
         for layer in self.layers:
             layer.init(d_model, d_ff)
 
+        self.pwhy.init([d_model, vocab], I.XavierUniform())
+        self.pby.init([1, vocab], I.XavierUniform())
+
     def __call__(self, trg, src, src_mask, trg_mask, train):
         for layer in self.layers:
-            x = layers(x, src, src_mask, trg_mask, train)
-        return x
+            h = layer(trg, src, src_mask, trg_mask, train)
+
+        why = F.parameter(self.pwhy)
+        by = F.broadcast(F.parameter(self.pby), 0, h.shape()[0])
+        return h @ why + by
 
 class TransformerEmbeddings(Model):
     def __init__(self, dropout, max_len):
@@ -213,42 +237,49 @@ class TransformerEmbeddings(Model):
         self.plookup.init([d_model, vocab], I.XavierUniform())
 
     def __call__(self, seq, train):
-
         lookup = F.parameter(self.plookup)
+        d_model = lookup.shape()[0]
         if self.pe is None:
-            self.pe = F.input(self.positional_encoding())
+            self.pe = self.positional_encoding()
 
         embed = []
         for w in seq:
-            e = F.pick(lookup, w)
-            e *= math.sqrt(e.shape()[-1])
-            pe = F.dropout(e + self.pe[:len(e)], self.dropout, train)
-            embed.append(pe)
-        return F.concat(embed, 2)
+            e = F.pick(lookup, w, 1)
+            embed.append(e)
+        embed_tensor = F.transpose(F.concat(embed, 1))
+
+        embed_tensor *= math.sqrt(d_model)
+        pe = F.dropout(embed_tensor + F.input(self.pe[:len(seq)]), self.dropout, train)
+        return pe
 
     def positional_encoding(self):
-        pe = np.zeros((self.max_len, self.d_model))
+        d_model = self.plookup.shape()[0]
+        pe = np.zeros((self.max_len, d_model))
         position = np.expand_dims(np.arange(0, self.max_len), axis=1)
-        div_term = np.exp(np.arange(0, self.d_model, 2) * -(math.log(10000.0) / self.d_model))
+        div_term = np.exp(np.arange(0, d_model, 2) * -(math.log(10000.0) / d_model))
         div_term = np.expand_dims(div_term, axis=0)
         pe[:, 0::2] = np.sin(position * div_term)
         pe[:, 1::2] = np.cos(position * div_term)
         return pe
 
 class Transformer(Model):
-    def __init__(self, dropout=0.1, max_len=5000):
+    def __init__(self, n_heads=8, n_stacks=6, dropout=0.1, max_len=5000):
+        self.n_heads = n_heads
+        self.n_stacks = n_stacks
         self.dropout = dropout
         self.max_len = max_len
 
         self.src_embed = TransformerEmbeddings(dropout, max_len)
         self.trg_embed = TransformerEmbeddings(dropout, max_len)
-        self.encoder = TransformerEncoder(d_model, d_ff, n_heads, n_stacks, dropout)
-        self.decoder = TransformerDecoder(d_model, d_ff, n_heads, n_stacks, dropout)
+        self.encoder = TransformerEncoder(n_heads, n_stacks, dropout)
+        self.decoder = TransformerDecoder(n_heads, n_stacks, dropout)
         self.scan_attributes()
 
-    def init(self, vocab=37000, d_model=512, d_ff=2048, n_heads=8, n_stacks=6):
+    def init(self, vocab=37000, d_model=512, d_ff=2048):
         self.src_embed.init(vocab, d_model)
         self.trg_embed.init(vocab, d_model)
+        self.encoder.init(d_model, d_ff)
+        self.decoder.init(d_model, d_ff, vocab)
 
     def encode(self, src, src_mask, train=True):
         return self.encoder(self.src_embed(src, train=train),
@@ -262,9 +293,16 @@ class Transformer(Model):
                             trg_mask,
                             train=train)
 
-    def forward(self, src, tgt, src_mask, trg_mask, train=True):
-        return self.decode(self.encode(src, src_mask, train=train),
-                           trg,
-                           src_mask,
-                           trg_mask,
-                           train=train)
+    def loss(self, src, trg, src_mask, trg_mask, train=True):
+        output = self.decode(self.encode(src, src_mask, train=train),
+                             trg[:-1],
+                             src_mask,
+                             trg_mask,
+                             train=train)
+        losses = []
+        for i, t in enumerate(trg[1:]):
+            y = F.reshape(F.pick(output, [i], 0), Shape([output.shape()[1]]))
+            loss = F.softmax_cross_entropy(y, t, 0)
+            losses.append(loss)
+        loss = F.batch.mean(F.sum(losses))
+        return loss

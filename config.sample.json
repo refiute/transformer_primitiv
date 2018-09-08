@@ -1,5 +1,5 @@
 {
-    "gpu": 1,
+    "gpu": 0,
     "random_seed": 12345,
     "corpus_prefix": "small_parallel_enja",
     "train_source": "train.en",
@@ -11,14 +11,15 @@
     "min_length": 3,
     "max_length": 80,
     "ratio": 9,
-    "model_prefix": "model",
-    "vocabulary_size": 8000,
+    "model_prefix": "model/sample",
+    "vocabulary_size": 37000,
     "d_model": 512,
     "d_ff": 2048,
     "n_heads": 8,
     "n_stacks": 6,
     "dropout": 0.1,
-    "batchsize": 32,
+    "batchsize": 64,
     "epoch": 30,
+    "warmup_steps": 4000,
     "generalation_limit": 64
 }
