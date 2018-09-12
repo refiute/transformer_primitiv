@@ -3,6 +3,7 @@
 [Attention Is All You Need (Vaswani et al., NIPS'17)](https://papers.nips.cc/paper/7181-attention-is-all-you-need.pdf)
 without beam search
 
+it still doesn't work.
 
 ## Requirements
 * Python >= 3.4
