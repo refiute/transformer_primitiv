@@ -27,9 +27,9 @@ class LayerNorm(Model):
 
         dim = x.shape().depth()
         mean = F.mean(x, dim)
-        std = F.mean(x * x, dim) - mean * mean
+        std = F.sqrt(F.mean(x * x, dim) - mean * mean + self.eps)
 
-        return gain * (x - mean) / (std + self.eps) + bias
+        return gain * (x - mean) / std + bias
 
 class ScaledDotProductAttention():
     def __init__(self, dropout):
@@ -44,7 +44,7 @@ class ScaledDotProductAttention():
                 mask = F.broadcast(mask, 0, attn.shape()[0])
             attn -= 2000 * mask
 
-        attn_prob = F.dropout(F.dropout(attn, 1, train), self.dropout, train)
+        attn_prob = F.dropout(F.softmax(attn, 1), self.dropout, train)
         out = attn_prob @ value
 
         return out, attn_prob
@@ -143,9 +143,9 @@ class TransformerEncoderLayer(Model):
         self.feed_forward.init(d_model, d_ff)
         self.ff_norm.init(d_model)
 
-    def __call__(self, x, mask, train):
-        attn = F.dropout(self.self_attention(x, x, x, mask, train), self.dropout, train)
-        attn_res = self.attn_norm(x + attn)
+    def __call__(self, src, mask, train):
+        attn = F.dropout(self.self_attention(src, src, src, mask, train), self.dropout, train)
+        attn_res = self.attn_norm(src + attn)
         ff = F.dropout(self.feed_forward(attn_res, train), self.dropout, train)
         return self.ff_norm(attn_res + ff)
 
@@ -162,8 +162,9 @@ class TransformerEncoder(Model):
             layer.init(d_model, d_ff)
 
     def __call__(self, src, mask, train):
+        x = src
         for layer in self.layers:
-            x = layer(src, mask, train)
+            x = layer(x, mask, train)
         return x
 
 class TransformerDecoderLayer(Model):
@@ -186,9 +187,9 @@ class TransformerDecoderLayer(Model):
         self.feed_forward.init(d_model, d_ff)
         self.ff_norm.init(d_model)
 
-    def __call__(self, x, src, src_mask, trg_mask, train):
-        self_attn = F.dropout(self.self_attention(x, x, x, trg_mask, train), self.dropout, train)
-        self_attn_res = self.self_attn_norm(x + self_attn)
+    def __call__(self, src, trg, src_mask, trg_mask, train):
+        self_attn = F.dropout(self.self_attention(trg, trg, trg, trg_mask, train), self.dropout, train)
+        self_attn_res = self.self_attn_norm(trg + self_attn)
 
         attn = F.dropout(self.attention(self_attn_res, src, src, src_mask, train), self.dropout, train)
         attn_res = self.attn_norm(self_attn_res + attn)
@@ -215,9 +216,10 @@ class TransformerDecoder(Model):
         self.pwhy.init([d_model, vocab], I.XavierUniform())
         self.pby.init([1, vocab], I.XavierUniform())
 
-    def __call__(self, trg, src, src_mask, trg_mask, train):
+    def __call__(self, src, trg, src_mask, trg_mask, train):
+        h = trg
         for layer in self.layers:
-            h = layer(trg, src, src_mask, trg_mask, train)
+            h = layer(src, h, src_mask, trg_mask, train)
 
         why = F.parameter(self.pwhy)
         by = F.broadcast(F.parameter(self.pby), 0, h.shape()[0])
@@ -248,7 +250,8 @@ class TransformerEmbeddings(Model):
         embed_tensor = F.transpose(F.concat(embed, 1))
 
         embed_tensor *= math.sqrt(d_model)
-        pe = F.dropout(embed_tensor + F.input(self.pe[:len(seq)]), self.dropout, train)
+        pos = F.input(self.pe[:len(seq)])
+        pe = F.dropout(embed_tensor + pos, self.dropout, train)
         return pe
 
     def positional_encoding(self):
@@ -286,8 +289,8 @@ class Transformer(Model):
                             train=train)
 
     def decode(self, src, trg, src_mask, trg_mask, train=True):
-        return self.decoder(self.trg_embed(trg, train=train),
-                            src,
+        return self.decoder(src,
+                            self.trg_embed(trg, train=train),
                             src_mask,
                             trg_mask,
                             train=train)

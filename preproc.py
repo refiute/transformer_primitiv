@@ -43,7 +43,7 @@ def preproc(config):
     src_files = [config['train_source'], config['dev_source'], config['test_source']]
     for filename in src_files:
         orig_file = prefix / filename
-        subword_file = subword_dir / filename
+        subword_file = subword_dir / Path(filename).name
         with open(orig_file) as ifs, open(subword_file, 'w', encoding='utf-8') as ofs:
             for line in ifs:
                 print(' '.join(map(str, sp.EncodeAsPieces(line.strip()))), file=ofs)
@@ -52,7 +52,7 @@ def preproc(config):
     trg_files = [config['train_target'], config['dev_target'], config['test_target']]
     for filename in trg_files:
         orig_file = prefix / filename
-        subword_file = subword_dir / filename
+        subword_file = subword_dir / Path(filename).name
         with open(orig_file) as ifs, open(subword_file, 'w', encoding='utf-8') as ofs:
             for line in ifs:
                 print(' '.join(map(str, sp.EncodeAsPieces(line.strip()))), file=ofs)

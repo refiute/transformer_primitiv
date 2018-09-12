@@ -23,7 +23,7 @@ import sentencepiece as spm
 
 from model import Transformer
 from preproc import preproc
-from utils import load_corpus, make_batch, subsequent_mask, padding_mask
+from utils import load_corpus, clean_corpus, make_batch, subsequent_mask, padding_mask
 
 def train(model, optimizer, config, best_valid):
     max_epoch = config["epoch"]
@@ -35,10 +35,12 @@ def train(model, optimizer, config, best_valid):
     model_path = corpus_prefix / "spm.model"
     tokenizer = spm.SentencePieceProcessor()
     tokenizer.Load(str(model_path))
-    train_src = load_corpus(corpus_prefix / config["train_source"], tokenizer)
-    train_trg = load_corpus(corpus_prefix / config["train_target"], tokenizer)
-    dev_src = load_corpus(corpus_prefix / config["dev_source"], tokenizer)
-    dev_trg = load_corpus(corpus_prefix / config["dev_target"], tokenizer)
+    train_src = load_corpus(corpus_prefix / Path(config["train_source"]).name, tokenizer)
+    train_trg = load_corpus(corpus_prefix / Path(config["train_target"]).name, tokenizer)
+    train_src, train_trg = clean_corpus(train_src, train_trg, config)
+    dev_src = load_corpus(corpus_prefix / Path(config["dev_source"]).name, tokenizer)
+    dev_trg = load_corpus(corpus_prefix / Path(config["dev_target"]).name, tokenizer)
+    dev_src, dev_trg = clean_corpus(dev_src, dev_trg, config)
     num_train_sents = len(train_src)
     num_dev_sents = len(dev_src)
 
@@ -58,12 +60,17 @@ def train(model, optimizer, config, best_valid):
         train_loss = 0.
         train_itr = tqdm(range(0, num_train_sents, batchsize), desc='train')
         for ofs in train_itr:
+            step_num = optimizer.get_epoch() + 1
+            new_scale = 1 / math.sqrt(config['d_model']) * \
+                min(1 / math.sqrt(step_num),
+                    step_num * math.pow(config['warmup_steps'], -1.5))
+            optimizer.set_learning_rate_scaling(new_scale)
+
             batch_ids = train_ids[ofs : min(num_train_sents, ofs + batchsize)]
             src_batch = make_batch(train_src, batch_ids, eos_id)
             trg_batch = make_batch(train_trg, batch_ids, eos_id)
             src_mask = padding_mask(src_batch, eos_id)
             trg_mask = [x | subsequent_mask(len(trg_batch) - 1) for x in padding_mask(trg_batch[:-1], eos_id)]
-            # trg_mask = padding_mask(trg_batch[:-1], eos_id)
 
             g.clear()
             loss = model.loss(src_batch, trg_batch, src_mask, trg_mask)
@@ -72,12 +79,6 @@ def train(model, optimizer, config, best_valid):
 
             optimizer.reset_gradients()
             loss.backward()
-
-            step_num = optimizer.get_epoch() + 1
-            new_scale = 1 / math.sqrt(config['d_model']) * \
-                min(1 / math.sqrt(step_num),
-                    step_num * math.pow(config['warmup_steps'], -1.5))
-            optimizer.set_learning_rate_scaling(new_scale)
             optimizer.update()
         print("\ttrain loss = %.4f" % (train_loss / num_train_sents))
 
@@ -113,7 +114,7 @@ def test(model, config):
     model_path = corpus_prefix / "spm.model"
     tokenizer = spm.SentencePieceProcessor()
     tokenizer.Load(str(model_path))
-    test_src = load_corpus(corpus_prefix / config["test_source"], tokenizer)
+    test_src = load_corpus(corpus_prefix / Path(config["test_source"]).name, tokenizer)
     num_test_sents = len(test_src)
 
     eos_id = tokenizer.PieceToId("</s>")
@@ -176,7 +177,7 @@ def main(config):
         with Path(prefix).with_suffix('.valid').open() as f:
             valid_ppl = float(f.read().strip())
         print('done.', file=sys.stderr, flush=True)
-        train(model, optimizer, valid_ppl)
+        train(model, optimizer, config, valid_ppl)
     elif mode == 'test':
         model = Transformer(config['n_heads'], config['n_stacks'], config['dropout'], config['generation_limit'])
         model.load(prefix + '.model')

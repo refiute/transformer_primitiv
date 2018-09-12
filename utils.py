@@ -9,6 +9,21 @@ def load_corpus(filepath, tokenizer):
                   for line in ifs]
     return corpus
 
+def clean_corpus(src, trg, config):
+    clean_src = []
+    clean_trg = []
+    max_len = config['max_len']
+    ratio = config['ratio']
+    for src_sent, trg_sent in zip(src, trg):
+        src_len = len(src_sent)
+        trg_len = len(trg_sent)
+        if src_len > max_len or trg_len > max_len or \
+                src_len / trg_len > ratio or trg_len / src_len > ratio:
+            continue
+        clean_src.append(src_sent)
+        clean_trg.append(trg_sent)
+    return clean_src, clean_trg
+
 def make_batch(corpus, sent_ids, eos_id):
     batch_size = len(sent_ids)
     max_len = 0
