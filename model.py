@@ -22,14 +22,17 @@ class LayerNorm(Model):
 
     def __call__(self, x):
         seq_len = x.shape()[0]
+        d_model = x.shape()[1]
+
         gain = F.broadcast(F.parameter(self.pgain), 0, seq_len)
         bias = F.broadcast(F.parameter(self.pbias), 0, seq_len)
 
-        dim = x.shape().depth()
-        mean = F.mean(x, dim)
-        std = F.sqrt(F.mean(x * x, dim) - mean * mean + self.eps)
+        mean = F.mean(x, 1)
+        std = F.sqrt(F.mean(x * x, 1) - mean * mean)
 
-        return gain * (x - mean) / std + bias
+        mean = F.broadcast(F.reshape(mean, Shape([seq_len, 1])), 1, d_model)
+        std = F.broadcast(F.reshape(std, Shape([seq_len, 1])), 1, d_model)
+        return gain * (x - mean) / (std + self.eps) + bias
 
 class ScaledDotProductAttention():
     def __init__(self, dropout):
