@@ -17,7 +17,7 @@ from tqdm import tqdm
 from primitiv import Device, Graph, Optimizer, Shape
 from primitiv import devices as D
 from primitiv import optimizers as O
-from primitiv import functions as F
+from primitiv import tensor_functions as TF
 
 import sentencepiece as spm
 
@@ -82,6 +82,7 @@ def train(model, optimizer, config, best_valid):
             optimizer.update()
         print("\ttrain loss = %.4f" % (train_loss / num_train_sents))
 
+        g.clear()
         valid_loss = 0.
         valid_itr = tqdm(range(0, num_dev_sents, batchsize), desc='valid')
         for ofs in valid_itr:
@@ -91,7 +92,6 @@ def train(model, optimizer, config, best_valid):
             src_mask = padding_mask(src_batch, eos_id)
             trg_mask = [x | subsequent_mask(len(trg_batch) - 1) for x in padding_mask(trg_batch[:-1], eos_id)]
 
-            g.clear()
             loss = model.loss(src_batch, trg_batch, src_mask, trg_mask, train=False)
             valid_loss += loss.to_float() * len(batch_ids)
             valid_itr.set_postfix(loss=loss.to_float())
@@ -120,10 +120,6 @@ def test(model, config):
     eos_id = tokenizer.PieceToId("</s>")
     test_ids = list(range(num_test_sents))
 
-    g = Graph()
-    Graph.set_default(g)
-
-    hyp = []
     test_itr = tqdm(range(0, num_test_sents, batchsize), desc='test')
     for ofs in test_itr:
         batch_ids = test_ids[ofs : min(ofs + batchsize, num_test_sents)]
@@ -134,21 +130,22 @@ def test(model, config):
         trg_ids = [np.array([tokenizer.PieceToId('<s>')] * len(batch_ids))]
         eos_ids = np.array([eos_id] * len(batch_ids))
         while (trg_ids[-1] != eos_ids).any():
-            if len(trg_ids) > config['generation_limit'] + 1:
+            if len(trg_ids) > config['generation_limit']:
                 print("Warning: Sentence generation did not finish in", config['generation_limit'],
                       "iterations.", file=sys.stderr)
-                trg_ids.append(eos_id)
+                trg_ids.append(eos_ids)
                 break
 
-            out = model.decode(src_encode, trg_ids, src_mask, subsequent_mask(len(trg_ids)), train=False)
-            y = F.pick(out, [len(trg_ids) - 1], 0)
-            y = np.array(F.reshape(y, Shape([y.shape()[1]])).argmax(0))
+            trg_mask = [subsequent_mask(len(trg_ids)) for _ in padding_mask(trg_ids, eos_id)]
+            out = model.decode(src_encode, trg_ids, src_mask, trg_mask, train=False)
+            y = TF.pick(out, [out.shape()[0] - 1], 0)
+            y = np.array(y.argmax(1))
             trg_ids.append(y)
-        hyp.extend([hyp[:np.where(hyp == eos_id)[0][0]]for hyp in np.array(trg_ids).T])
 
-    for ids in hyp:
-        sent = tokenizer.DecodeIds(ids.tolist())
-        print(sent)
+        hyp = [hyp_sent[:np.where(hyp_sent == eos_id)[0][0]] for hyp_sent in np.array(trg_ids).T]
+        for ids in hyp:
+            sent = tokenizer.DecodeIds(ids.tolist())
+            print(sent)
 
 
 def main(config):
@@ -164,13 +161,13 @@ def main(config):
 
     prefix = config['model_prefix']
     if mode == 'train':
-        model = Transformer(config['n_heads'], config['n_stacks'], config['dropout'], config['generation_limit'])
+        model = Transformer(config['n_heads'], config['n_stacks'], config['dropout'], config['max_len'])
         model.init(config['vocabulary_size'], config['d_model'], config['d_ff'])
         optimizer = O.Adam(alpha=1, beta2=0.98, eps=1e-9)
         train(model, optimizer, config, 1e10)
     elif mode == 'resume':
         print('loading model/optimizer ... ', end='', file=sys.stderr, flush=True)
-        model = Transformer(config['n_heads'], config['n_stacks'], config['dropout'], config['generation_limit'])
+        model = Transformer(config['n_heads'], config['n_stacks'], config['dropout'], config['max_len'])
         model.load(prefix + '.model')
         optimizer = O.Adam(alpha=1, beta2=0.98, eps=1e-9)
         optimizer.load(prefix + '.optimizer')
@@ -179,7 +176,7 @@ def main(config):
         print('done.', file=sys.stderr, flush=True)
         train(model, optimizer, config, valid_ppl)
     elif mode == 'test':
-        model = Transformer(config['n_heads'], config['n_stacks'], config['dropout'], config['generation_limit'])
+        model = Transformer(config['n_heads'], config['n_stacks'], config['dropout'], config['max_len'])
         model.load(prefix + '.model')
         test(model, config)
 

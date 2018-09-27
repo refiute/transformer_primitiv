@@ -12,7 +12,7 @@ def load_corpus(filepath, tokenizer):
 def clean_corpus(src, trg, config):
     clean_src = []
     clean_trg = []
-    max_len = config['max_len']
+    max_len = config['generation_limit']
     ratio = config['ratio']
     for src_sent, trg_sent in zip(src, trg):
         src_len = len(src_sent)
