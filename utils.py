@@ -44,8 +44,11 @@ def padding_mask(batch, eos_id):
     batch_size = len(batch[0])
 
     mask = [np.array([[False] * seq_len]) for _ in range(batch_size)]
-    for i in range(seq_len):
-        for j in range(batch_size):
-            mask[j][0][i] = (batch[i][j] == eos_id)
+    for j in range(batch_size):
+        pad_flag = False
+        for i in range(seq_len):
+            if batch[i][j] == eos_id:
+                mask[j][0][i] = pad_flag
+                pad_flag = True
 
     return mask
