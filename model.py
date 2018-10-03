@@ -35,6 +35,16 @@ class LayerNorm(Model):
         gain = self.F.broadcast(self.F.parameter(self.pgain), 0, seq_len)
         bias = self.F.broadcast(self.F.parameter(self.pbias), 0, seq_len)
 
+        # mean = self.F.reshape(self.F.mean(x, 1), Shape([seq_len, 1])) # [seq_len, 1]
+        # mean = self.F.broadcast(mean, 1, d_model) # [seq_len, d_model]
+
+        # variance = self.F.reshape(self.F.mean((x - mean) ** 2, 1),
+        #                           Shape([seq_len, 1])) # [seq_len, 1]
+        # variance = self.F.broadcast(variance, 1, d_model) # [seq_len, d_model]
+
+        # norm = (x - mean) / self.F.sqrt(variance + self.eps)
+        # return gain * norm + bias
+
         mean = self.F.mean(x, 1)
         std = self.F.sqrt(self.F.mean(x * x, 1) - mean * mean)
 
@@ -60,7 +70,7 @@ class ScaledDotProductAttention():
         attn_prob = self.F.dropout(self.F.softmax(attn, 1), self.dropout, train) # [query_len, key_len]
         out = attn_prob @ value # [query_len, d_k]
 
-        return out, attn_prob
+        return out
 
 class MultiHeadAttention(Model):
     def __init__(self, n_heads, dropout):
@@ -82,6 +92,14 @@ class MultiHeadAttention(Model):
         self.pwv.init([d_model, d_model], I.XavierUniform())
         self.pwo.init([d_model, d_model], I.XavierUniform())
 
+    def split_heads(self, x):
+        d_model = x.shape()[1]
+        d_k = d_model // self.n_heads
+
+        ret = [self.F.slice(x, 1, i * d_k, (i + 1) * d_k)
+               for i in range(self.n_heads)] # [n_heads, x_len, d_k]
+        return ret
+
     @function_type
     def __call__(self, query, key, value, mask, train):
         wq = self.F.parameter(self.pwq)
@@ -89,25 +107,17 @@ class MultiHeadAttention(Model):
         wv = self.F.parameter(self.pwv)
         wo = self.F.parameter(self.pwo)
 
-        d_model = wq.shape()[0]
-        d_k = d_model // self.n_heads
-
-        query_len = query.shape()[0]
         query = query @ wq
-        query = [self.F.slice(query, 1, i * d_k, (i + 1) * d_k)
-                 for i in range(self.n_heads)] # [n_heads, query_len, d_k]
-        key_len = key.shape()[0]
         key   = key   @ wk
-        key   = [self.F.slice(key  , 1, i * d_k, (i + 1) * d_k)
-                 for i in range(self.n_heads)] # [n_heads, key_len, d_k]
-        value_len = value.shape()[0]
         value = value @ wv
-        value = [self.F.slice(value, 1, i * d_k, (i + 1) * d_k)
-                 for i in range(self.n_heads)] # [n_heads, value_len, d_k]
+
+        query = self.split_heads(query)
+        key   = self.split_heads(key)
+        value = self.split_heads(value)
 
         heads = []
         for q, k, v in zip(query, key, value):
-            head, _ = self.attention(q, k, v, mask, train)
+            head = self.attention(q, k, v, mask, train)
             heads.append(head)
         heads = self.F.concat(heads, 1)
 
@@ -144,25 +154,29 @@ class TransformerEncoderLayer(Model):
     def __init__(self, n_heads, dropout):
         self.dropout = dropout
 
-        self.self_attention = MultiHeadAttention(n_heads, dropout)
         self.attn_norm = LayerNorm()
-        self.feed_forward = PositionwiseFeedForward(dropout)
+        self.self_attention = MultiHeadAttention(n_heads, dropout)
         self.ff_norm = LayerNorm()
+        self.feed_forward = PositionwiseFeedForward(dropout)
 
         self.scan_attributes()
 
     def init(self, d_model, d_ff):
-        self.self_attention.init(d_model)
         self.attn_norm.init(d_model)
-        self.feed_forward.init(d_model, d_ff)
+        self.self_attention.init(d_model)
         self.ff_norm.init(d_model)
+        self.feed_forward.init(d_model, d_ff)
 
     @function_type
     def __call__(self, src, mask, train):
-        attn = self.F.dropout(self.self_attention(src, src, src, mask, train), self.dropout, train)
-        attn_res = self.attn_norm(src + attn, train)
-        ff = self.F.dropout(self.feed_forward(attn_res, train), self.dropout, train)
-        return self.ff_norm(attn_res + ff, train)
+        src = self.attn_norm(src, train)
+        attn = self.self_attention(src, src, src, mask, train)
+        attn = src + self.F.dropout(attn, self.dropout, train)
+
+        attn = self.ff_norm(attn, train)
+        ff = self.feed_forward(attn, train)
+        ff = attn + self.F.dropout(ff, self.dropout, train)
+        return ff
 
 class TransformerEncoder(Model):
     def __init__(self, n_heads, n_stacks, dropout):
@@ -171,48 +185,54 @@ class TransformerEncoder(Model):
             layer = TransformerEncoderLayer(n_heads, dropout)
             self.add("encoder_layer" + str(idx), layer)
             self.layers.append(layer)
+        self.norm = LayerNorm()
+        self.scan_attributes()
 
     def init(self, d_model, d_ff):
         for layer in self.layers:
             layer.init(d_model, d_ff)
+        self.norm.init(d_model)
 
     @function_type
     def __call__(self, src, mask, train):
-        x = src
         for layer in self.layers:
-            x = layer(x, mask, train)
-        return x
+            src = layer(src, mask, train)
+        return self.norm(src, train)
 
 class TransformerDecoderLayer(Model):
     def __init__(self, n_heads, dropout):
         self.dropout = dropout
 
-        self.self_attention = MultiHeadAttention(n_heads, dropout)
         self.self_attn_norm = LayerNorm()
-        self.attention = MultiHeadAttention(n_heads, dropout)
+        self.self_attention = MultiHeadAttention(n_heads, dropout)
         self.attn_norm = LayerNorm()
-        self.feed_forward = PositionwiseFeedForward(dropout)
+        self.attention = MultiHeadAttention(n_heads, dropout)
         self.ff_norm = LayerNorm()
+        self.feed_forward = PositionwiseFeedForward(dropout)
         self.scan_attributes()
 
     def init(self, d_model, d_ff):
-        self.self_attention.init(d_model)
         self.self_attn_norm.init(d_model)
-        self.attention.init(d_model)
+        self.self_attention.init(d_model)
         self.attn_norm.init(d_model)
-        self.feed_forward.init(d_model, d_ff)
+        self.attention.init(d_model)
         self.ff_norm.init(d_model)
+        self.feed_forward.init(d_model, d_ff)
 
     @function_type
     def __call__(self, src, trg, src_mask, trg_mask, train):
-        self_attn = self.F.dropout(self.self_attention(trg, trg, trg, trg_mask, train), self.dropout, train)
-        self_attn_res = self.self_attn_norm(trg + self_attn, train)
+        trg = self.self_attn_norm(trg, train)
+        self_attn = self.self_attention(trg, trg, trg, trg_mask, train)
+        self_attn = trg + self.F.dropout(self_attn, self.dropout, train)
 
-        attn = self.F.dropout(self.attention(self_attn_res, src, src, src_mask, train), self.dropout, train)
-        attn_res = self.attn_norm(self_attn_res + attn, train)
+        self_attn = self.attn_norm(self_attn, train)
+        attn = self.attention(self_attn, src, src, src_mask, train)
+        attn = self_attn + self.F.dropout(attn, self.dropout, train)
 
-        ff = self.F.dropout(self.feed_forward(attn_res, train), self.dropout, train)
-        return self.ff_norm(attn_res + ff, train)
+        attn = self.ff_norm(attn, train)
+        ff = self.feed_forward(attn, train)
+        ff = attn + self.F.dropout(ff, self.dropout, train)
+        return ff
 
 class TransformerDecoder(Model):
     def __init__(self, n_heads, n_stacks, dropout):
@@ -221,6 +241,7 @@ class TransformerDecoder(Model):
             layer = TransformerDecoderLayer(n_heads, dropout)
             self.add("decoder_layer" + str(idx), layer)
             self.layers.append(layer)
+        self.norm = LayerNorm()
 
         self.pwhy = Parameter()
         self.pby = Parameter()
@@ -229,22 +250,23 @@ class TransformerDecoder(Model):
     def init(self, d_model, d_ff, vocab):
         for layer in self.layers:
             layer.init(d_model, d_ff)
+        self.norm.init(d_model)
 
         self.pwhy.init([d_model, vocab], I.XavierUniform())
         self.pby.init([1, vocab], I.XavierUniform())
 
     @function_type
     def __call__(self, src, trg, src_mask, trg_mask, train):
-        h = trg
         for layer in self.layers:
-            h = layer(src, h, src_mask, trg_mask, train)
+            trg = layer(src, trg, src_mask, trg_mask, train)
+        trg = self.norm(trg, train)
 
         why = self.F.parameter(self.pwhy)
-        by = self.F.broadcast(self.F.parameter(self.pby), 0, h.shape()[0])
-        return h @ why + by
+        by = self.F.broadcast(self.F.parameter(self.pby), 0, trg.shape()[0])
+        return trg @ why + by
 
 class TransformerEmbeddings(Model):
-    def __init__(self, dropout, max_len):
+    def __init__(self, max_len, dropout):
         self.max_len = max_len
         self.dropout = dropout
         self.pe = None
@@ -290,7 +312,7 @@ class Transformer(Model):
         self.dropout = dropout
         self.max_len = max_len
 
-        self.embed = TransformerEmbeddings(dropout, max_len)
+        self.embed = TransformerEmbeddings(max_len, dropout)
         self.encoder = TransformerEncoder(n_heads, n_stacks, dropout)
         self.decoder = TransformerDecoder(n_heads, n_stacks, dropout)
         self.scan_attributes()
@@ -321,8 +343,8 @@ class Transformer(Model):
                              train=train)
         losses = []
         for i, t in enumerate(trg[1:]):
-            y = self.F.reshape(self.F.pick(output, [i], 0), Shape([output.shape()[1]]))
-            loss = self.F.softmax_cross_entropy(y, t, 0)
+            y = self.F.pick(output, [i], 0)
+            loss = self.F.softmax_cross_entropy(y, t, 1)
             losses.append(loss)
         loss = self.F.batch.mean(self.F.sum(losses))
         return loss
