@@ -44,7 +44,7 @@ def train(model, optimizer, config, best_valid):
     num_train_sents = len(train_src)
     num_dev_sents = len(dev_src)
 
-    eos_id = tokenizer.PieceToId("</s>")
+    eos_id = tokenizer.eos_id()
     train_ids = list(range(num_train_sents))
     dev_ids = list(range(num_dev_sents))
 
@@ -117,7 +117,7 @@ def test(model, config):
     test_src = load_corpus(corpus_prefix / Path(config["test_source"]).name, tokenizer)
     num_test_sents = len(test_src)
 
-    eos_id = tokenizer.PieceToId("</s>")
+    eos_id = tokenizer.eos_id()
     test_ids = list(range(num_test_sents))
 
     test_itr = tqdm(range(0, num_test_sents, batchsize), desc='test')
@@ -164,6 +164,7 @@ def main(config):
         model = Transformer(config['n_heads'], config['n_stacks'], config['dropout'], config['max_len'])
         model.init(config['vocabulary_size'], config['d_model'], config['d_ff'])
         optimizer = O.Adam(alpha=1, beta2=0.98, eps=1e-9)
+        optimizer.set_gradient_clipping(5)
         train(model, optimizer, config, 1e10)
     elif mode == 'resume':
         print('loading model/optimizer ... ', end='', file=sys.stderr, flush=True)
