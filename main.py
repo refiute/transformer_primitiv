@@ -7,7 +7,6 @@ import math
 import json
 
 from argparse import ArgumentParser
-from configparser import ConfigParser
 from collections import defaultdict
 from pathlib import Path
 
@@ -61,9 +60,8 @@ def train(model, optimizer, config, best_valid):
         train_itr = tqdm(range(0, num_train_sents, batchsize), desc='train')
         for ofs in train_itr:
             step_num = optimizer.get_epoch() + 1
-            new_scale = 1 / math.sqrt(config['d_model']) * \
-                min(1 / math.sqrt(step_num),
-                    step_num * math.pow(config['warmup_steps'], -1.5))
+            new_scale = config['d_model'] ** (-0.5) * \
+                min(step_num ** (-0.5), step_num * config['warmup_steps'] ** (-1.5))
             optimizer.set_learning_rate_scaling(new_scale)
 
             batch_ids = train_ids[ofs : min(num_train_sents, ofs + batchsize)]
@@ -171,6 +169,7 @@ def main(config):
         model = Transformer(config['n_heads'], config['n_stacks'], config['dropout'], config['max_len'])
         model.load(prefix + '.model')
         optimizer = O.Adam(alpha=1, beta2=0.98, eps=1e-9)
+        optimizer.set_gradient_clipping(5)
         optimizer.load(prefix + '.optimizer')
         with Path(prefix).with_suffix('.valid').open() as f:
             valid_ppl = float(f.read().strip())
