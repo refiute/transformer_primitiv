@@ -242,9 +242,6 @@ class TransformerDecoder(Model):
             self.add("decoder_layer" + str(idx), layer)
             self.layers.append(layer)
         self.norm = LayerNorm()
-
-        self.pwhy = Parameter()
-        self.pby = Parameter()
         self.scan_attributes()
 
     def init(self, d_model, d_ff, vocab):
@@ -252,18 +249,12 @@ class TransformerDecoder(Model):
             layer.init(d_model, d_ff)
         self.norm.init(d_model)
 
-        self.pwhy.init([d_model, vocab], I.XavierUniform())
-        self.pby.init([1, vocab], I.XavierUniform())
-
     @function_type
     def __call__(self, src, trg, src_mask, trg_mask, train):
         for layer in self.layers:
             trg = layer(src, trg, src_mask, trg_mask, train)
-        trg = self.norm(trg, train)
+        return self.norm(trg, train)
 
-        why = self.F.parameter(self.pwhy)
-        by = self.F.broadcast(self.F.parameter(self.pby), 0, trg.shape()[0])
-        return trg @ why + by
 
 class TransformerEmbeddings(Model):
     def __init__(self, max_len, dropout):
@@ -272,13 +263,15 @@ class TransformerEmbeddings(Model):
         self.pe = None
 
         self.plookup = Parameter()
+        self.pby = Parameter()
         self.scan_attributes()
 
     def init(self, vocab, d_model):
         self.plookup.init([d_model, vocab], I.XavierUniform())
+        self.pby.init([1, vocab], I.XavierUniform())
 
     @function_type
-    def __call__(self, seq, train):
+    def encode(self, seq, train):
         lookup = self.F.parameter(self.plookup)
         d_model = lookup.shape()[0]
         if self.pe is None:
@@ -294,6 +287,12 @@ class TransformerEmbeddings(Model):
         pos = self.F.input(self.pe[:len(seq)])
         pe = self.F.dropout(embed_tensor + pos, self.dropout, train)
         return pe
+
+    @function_type
+    def decode(self, x, train): # x: [seq_len, d_model]
+        w = self.F.parameter(self.plookup) # [d_model, vocab]
+        by = self.F.broadcast(self.F.parameter(self.pby), 0, x.shape()[0]) # [seq_len, vocab]
+        return x @ w + by # [seq_len, vocab]
 
     def positional_encoding(self):
         d_model = self.plookup.shape()[0]
@@ -323,16 +322,17 @@ class Transformer(Model):
         self.decoder.init(d_model, d_ff, vocab)
 
     def encode(self, src, src_mask, train=True):
-        return self.encoder(self.embed(src, train=train),
+        return self.encoder(self.embed.encode(src, train=train),
                             src_mask,
                             train=train)
 
     def decode(self, src, trg, src_mask, trg_mask, train=True):
-        return self.decoder(src,
-                            self.embed(trg, train=train),
+        ret =  self.decoder(src,
+                            self.embed.encode(trg, train=train),
                             src_mask,
                             trg_mask,
                             train=train)
+        return self.embed.decode(ret, train)
 
     @function_type
     def loss(self, src, trg, src_mask, trg_mask, train=True):
