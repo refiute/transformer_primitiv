@@ -35,21 +35,11 @@ class LayerNorm(Model):
         gain = self.F.broadcast(self.F.parameter(self.pgain), 0, seq_len)
         bias = self.F.broadcast(self.F.parameter(self.pbias), 0, seq_len)
 
-        # mean = self.F.reshape(self.F.mean(x, 1), Shape([seq_len, 1])) # [seq_len, 1]
-        # mean = self.F.broadcast(mean, 1, d_model) # [seq_len, d_model]
-
-        # variance = self.F.reshape(self.F.mean((x - mean) ** 2, 1),
-        #                           Shape([seq_len, 1])) # [seq_len, 1]
-        # variance = self.F.broadcast(variance, 1, d_model) # [seq_len, d_model]
-
-        # norm = (x - mean) / self.F.sqrt(variance + self.eps)
-        # return gain * norm + bias
-
         mean = self.F.mean(x, 1)
         std = self.F.sqrt(self.F.mean(x * x, 1) - mean * mean)
 
-        mean = self.F.broadcast(self.F.reshape(mean, Shape([seq_len, 1])), 1, d_model)
-        std = self.F.broadcast(self.F.reshape(std, Shape([seq_len, 1])), 1, d_model)
+        mean = self.F.broadcast(mean, 1, d_model)
+        std = self.F.broadcast(std, 1, d_model)
         return gain * (x - mean) / (std + self.eps) + bias
 
 class ScaledDotProductAttention():
