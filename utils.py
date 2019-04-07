@@ -1,5 +1,6 @@
 # coding: utf-8
 
+import random
 import numpy as np
 from primitiv import functions as F
 
@@ -23,6 +24,28 @@ def clean_corpus(src, trg, config):
         clean_src.append(src_sent)
         clean_trg.append(trg_sent)
     return clean_src, clean_trg
+
+def create_batch_itr(src, max_tokens=1e9, max_sentences=1e9, shuffle=False):
+    indice = list(range(len(src)))
+    if shuffle:
+        random.shuffle(indice)
+
+    batch = []
+    max_len = 0
+    for idx in indice:
+        max_len = max(max_len, len(src[idx]))
+        assert max_len <= max_tokens, "sentence at index {} exceeds max_tokens limit!".format(idx)
+        num_tokens = (len(batch) + 1) * max_len
+
+        if num_tokens > max_tokens or len(batch) == max_sentences:
+            yield batch
+            batch = [idx]
+            max_len = 0
+
+        batch.append(idx)
+
+    if len(batch) > 0:
+        yield batch
 
 def make_batch(corpus, sent_ids, eos_id):
     batch_size = len(sent_ids)

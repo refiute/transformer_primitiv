@@ -22,11 +22,21 @@ import sentencepiece as spm
 
 from model import Transformer
 from preproc import preproc
-from utils import load_corpus, clean_corpus, make_batch, subsequent_mask, padding_mask
+from utils import (
+    load_corpus,
+    clean_corpus,
+    make_batch,
+    subsequent_mask,
+    padding_mask,
+    create_batch_itr
+)
 
 def train(model, optimizer, config, best_valid):
-    max_epoch = config["epoch"]
-    batchsize = config["batchsize"]
+    max_epoch = config.get("max_epoch", int(1e9))
+    max_iteration = config.get("max_iteration", int(1e9))
+    max_sentences = config.get("max_sentences", 1e9)
+    max_tokens = config.get("max_tokens", 1e9)
+    update_freq = config.get('update_freq', 1)
 
     optimizer.add(model)
 
@@ -42,49 +52,67 @@ def train(model, optimizer, config, best_valid):
     dev_src, dev_trg = clean_corpus(dev_src, dev_trg, config)
     num_train_sents = len(train_src)
     num_dev_sents = len(dev_src)
-
     eos_id = tokenizer.eos_id()
-    train_ids = list(range(num_train_sents))
-    dev_ids = list(range(num_dev_sents))
 
-    for epoch in range(max_epoch):
-        g = Graph()
-        Graph.set_default(g)
+    g = Graph()
+    Graph.set_default(g)
 
-        print("epoch: %2d/%2d" % (epoch + 1, max_epoch))
-        print("\tlearning rate scale = %.4e" % (optimizer.get_learning_rate_scaling()))
-
-        random.shuffle(train_ids)
+    epoch = 0
+    iteration = 0
+    while epoch < max_epoch and iteration < max_iteration:
+        train_itr = create_batch_itr(train_src, max_tokens, max_sentences, shuffle=True)
+        train_itr = tqdm(train_itr, desc='train epoch {}'.format(epoch + 1))
 
         train_loss = 0.
-        train_itr = tqdm(range(0, num_train_sents, batchsize), desc='train')
-        for ofs in train_itr:
-            step_num = optimizer.get_epoch() + 1
-            new_scale = config['d_model'] ** (-0.5) * \
-                min(step_num ** (-0.5), step_num * config['warmup_steps'] ** (-1.5))
-            optimizer.set_learning_rate_scaling(new_scale)
-
-            batch_ids = train_ids[ofs : min(num_train_sents, ofs + batchsize)]
+        itr_loss = 0.
+        itr_tokens = 0
+        itr_sentences = 0
+        optimizer.reset_gradients()
+        for step, batch_ids in enumerate(train_itr):
             src_batch = make_batch(train_src, batch_ids, eos_id)
             trg_batch = make_batch(train_trg, batch_ids, eos_id)
             src_mask = padding_mask(src_batch, eos_id)
             trg_mask = [x | subsequent_mask(len(trg_batch) - 1) for x in padding_mask(trg_batch[:-1], eos_id)]
+            itr_tokens += len(src_batch) * len(src_batch[0])
+            itr_sentences += len(batch_ids)
 
             g.clear()
             loss = model.loss(src_batch, trg_batch, src_mask, trg_mask)
             train_loss += loss.to_float() * len(batch_ids)
-            train_itr.set_postfix(loss=loss.to_float())
-
-            optimizer.reset_gradients()
+            loss /= update_freq
+            itr_loss += loss.to_float()
             loss.backward()
-            optimizer.update()
+
+            if (step + 1) % update_freq == 0:
+                step_num = optimizer.get_epoch() + 1
+                new_scale = config['d_model'] ** (-0.5) * \
+                    min(step_num ** (-0.5), step_num * config['warmup_steps'] ** (-1.5))
+                optimizer.set_learning_rate_scaling(new_scale)
+
+                optimizer.update()
+                optimizer.reset_gradients()
+
+                iteration += 1
+                train_itr.set_postfix(
+                    itr=("%d" % (iteration)),
+                    loss=("%.3lf" % (itr_loss)),
+                    wpb=("%d" % (itr_tokens)),
+                    spb=("%d" % (itr_sentences)),
+                    lr=optimizer.get_learning_rate_scaling()
+                )
+                itr_loss = 0.
+                itr_tokens = 0
+                itr_sentences = 0
+
+            if iteration >= max_iteration:
+                break
         print("\ttrain loss = %.4f" % (train_loss / num_train_sents))
 
         g.clear()
         valid_loss = 0.
-        valid_itr = tqdm(range(0, num_dev_sents, batchsize), desc='valid')
-        for ofs in valid_itr:
-            batch_ids = dev_ids[ofs : min(ofs + batchsize, num_dev_sents)]
+        valid_itr = create_batch_itr(dev_src, max_tokens, max_sentences, shuffle=False)
+        valid_itr = tqdm(valid_itr, desc='valid epoch {}'.format(epoch + 1))
+        for batch_ids in valid_itr:
             src_batch = make_batch(dev_src, batch_ids, eos_id)
             trg_batch = make_batch(dev_trg, batch_ids, eos_id)
             src_mask = padding_mask(src_batch, eos_id)
@@ -188,6 +216,10 @@ def get_config():
 
     config = json.load(open(args.config))
     config['mode'] = args.mode
+
+    for k, v in config.items():
+        print("{}: {}".format(k, v))
+
     return config
 
 if __name__ == '__main__':
