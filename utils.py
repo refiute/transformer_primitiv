@@ -13,7 +13,7 @@ def load_corpus(filepath, tokenizer):
 def clean_corpus(src, trg, config):
     clean_src = []
     clean_trg = []
-    max_len = config['generation_limit']
+    max_len = config['max_len']
     ratio = config['ratio']
     for src_sent, trg_sent in zip(src, trg):
         src_len = len(src_sent)
@@ -25,7 +25,7 @@ def clean_corpus(src, trg, config):
         clean_trg.append(trg_sent)
     return clean_src, clean_trg
 
-def create_batch_itr(src, max_tokens=1e9, max_sentences=1e9, shuffle=False):
+def create_batch_itr(src, trg=None, max_tokens=1e9, max_sentences=1e9, shuffle=False):
     indice = list(range(len(src)))
     if shuffle:
         random.shuffle(indice)
@@ -33,7 +33,8 @@ def create_batch_itr(src, max_tokens=1e9, max_sentences=1e9, shuffle=False):
     batch = []
     max_len = 0
     for idx in indice:
-        max_len = max(max_len, len(src[idx]))
+        token_len = max(len(src[idx]), len(trg[idx])) if trg else len(src[idx])
+        max_len = max(max_len, token_len)
         assert max_len <= max_tokens, "sentence at index {} exceeds max_tokens limit!".format(idx)
         num_tokens = (len(batch) + 1) * max_len
 

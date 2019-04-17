@@ -54,13 +54,13 @@ def train(model, optimizer, config, best_valid):
     num_dev_sents = len(dev_src)
     eos_id = tokenizer.eos_id()
 
-    g = Graph()
-    Graph.set_default(g)
-
     epoch = 0
     iteration = 0
     while epoch < max_epoch and iteration < max_iteration:
-        train_itr = create_batch_itr(train_src, max_tokens, max_sentences, shuffle=True)
+        g = Graph()
+        Graph.set_default(g)
+
+        train_itr = create_batch_itr(train_src, train_trg, max_tokens, max_sentences, shuffle=True)
         train_itr = tqdm(train_itr, desc='train epoch {}'.format(epoch + 1))
 
         train_loss = 0.
@@ -78,10 +78,15 @@ def train(model, optimizer, config, best_valid):
 
             g.clear()
             loss = model.loss(src_batch, trg_batch, src_mask, trg_mask)
-            train_loss += loss.to_float() * len(batch_ids)
+
             loss /= update_freq
-            itr_loss += loss.to_float()
             loss.backward()
+            loss_val = loss.to_float()
+            train_loss += loss_val * update_freq * len(batch_ids)
+            itr_loss += loss_val
+
+            # with open('graph.dot', 'w') as f:
+            #     print(g.dump("dot"), end="", file=f)
 
             if (step + 1) % update_freq == 0:
                 step_num = optimizer.get_epoch() + 1
@@ -108,9 +113,10 @@ def train(model, optimizer, config, best_valid):
                 break
         print("\ttrain loss = %.4f" % (train_loss / num_train_sents))
 
+
         g.clear()
         valid_loss = 0.
-        valid_itr = create_batch_itr(dev_src, max_tokens, max_sentences, shuffle=False)
+        valid_itr = create_batch_itr(dev_src, dev_trg, max_tokens, max_sentences, shuffle=False)
         valid_itr = tqdm(valid_itr, desc='valid epoch {}'.format(epoch + 1))
         for batch_ids in valid_itr:
             src_batch = make_batch(dev_src, batch_ids, eos_id)
@@ -134,7 +140,8 @@ def train(model, optimizer, config, best_valid):
             print('done.')
 
 def test(model, config):
-    batchsize = config["batchsize"]
+    max_sentences = config.get("max_sentences", 1e9)
+    max_tokens = config.get("max_tokens", 1e9)
 
     corpus_prefix = Path(config['corpus_prefix']) / "subword"
     model_path = corpus_prefix / "spm.model"
@@ -146,9 +153,10 @@ def test(model, config):
     eos_id = tokenizer.eos_id()
     test_ids = list(range(num_test_sents))
 
-    test_itr = tqdm(range(0, num_test_sents, batchsize), desc='test')
-    for ofs in test_itr:
-        batch_ids = test_ids[ofs : min(ofs + batchsize, num_test_sents)]
+    test_itr = create_batch_itr(test_src, max_tokens=max_tokens,
+                                max_sentences=max_sentences, shuffle=False)
+    test_itr = tqdm(test_itr, desc='test')
+    for batch_ids in test_itr:
         src_batch = make_batch(test_src, batch_ids, eos_id)
         src_mask = padding_mask(src_batch, eos_id)
         src_encode = model.encode(src_batch, src_mask, train=False)
@@ -187,14 +195,14 @@ def main(config):
 
     prefix = config['model_prefix']
     if mode == 'train':
-        model = Transformer(config['n_heads'], config['n_stacks'], config['dropout'], config['max_len'])
+        model = Transformer(config['n_heads'], config['n_stacks'], config['dropout'], config['generation_limit'])
         model.init(config['vocabulary_size'], config['d_model'], config['d_ff'])
         optimizer = O.Adam(alpha=1, beta2=0.98, eps=1e-9)
         optimizer.set_gradient_clipping(5)
         train(model, optimizer, config, 1e10)
     elif mode == 'resume':
         print('loading model/optimizer ... ', end='', file=sys.stderr, flush=True)
-        model = Transformer(config['n_heads'], config['n_stacks'], config['dropout'], config['max_len'])
+        model = Transformer(config['n_heads'], config['n_stacks'], config['dropout'], config['generation_limit'])
         model.load(prefix + '.model')
         optimizer = O.Adam(alpha=1, beta2=0.98, eps=1e-9)
         optimizer.set_gradient_clipping(5)
@@ -204,7 +212,7 @@ def main(config):
         print('done.', file=sys.stderr, flush=True)
         train(model, optimizer, config, valid_ppl)
     elif mode == 'test':
-        model = Transformer(config['n_heads'], config['n_stacks'], config['dropout'], config['max_len'])
+        model = Transformer(config['n_heads'], config['n_stacks'], config['dropout'], config['generation_limit'])
         model.load(prefix + '.model')
         test(model, config)
 
@@ -218,7 +226,7 @@ def get_config():
     config['mode'] = args.mode
 
     for k, v in config.items():
-        print("{}: {}".format(k, v))
+        print("{}: {}".format(k, v), file=sys.stderr)
 
     return config
 

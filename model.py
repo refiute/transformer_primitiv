@@ -52,10 +52,11 @@ class ScaledDotProductAttention():
         attn = (query @ self.F.transpose(key)) / math.sqrt(d_k) # [query_len, key_len]
 
         if mask is not None:
-            mask = self.F.input(mask) # [1, key_len] or [query_len, key_len]
-            if attn.shape() != mask.shape():
-                mask = self.F.broadcast(mask, 0, attn.shape()[0])
-            attn -= 2000 * mask
+            attn -= mask
+            # mask = self.F.input(mask) # [1, key_len] or [query_len, key_len]
+            # if attn.shape() != mask.shape():
+            #     mask = self.F.broadcast(mask, 0, attn.shape()[0])
+            # attn -= 2000 * mask
 
         attn_prob = self.F.dropout(self.F.softmax(attn, 1), self.dropout, train) # [query_len, key_len]
         out = attn_prob @ value # [query_len, d_k]
@@ -104,6 +105,11 @@ class MultiHeadAttention(Model):
         query = self.split_heads(query)
         key   = self.split_heads(key)
         value = self.split_heads(value)
+
+        if mask is not None:
+            mask = 2000 * self.F.input(mask)
+            if mask.shape()[0] != query[0].shape()[0]:
+                mask = self.F.broadcast(mask, 0, query[0].shape()[0])
 
         heads = []
         for q, k, v in zip(query, key, value):
