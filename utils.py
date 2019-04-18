@@ -18,7 +18,7 @@ def clean_corpus(src, trg, config):
     for src_sent, trg_sent in zip(src, trg):
         src_len = len(src_sent)
         trg_len = len(trg_sent)
-        if src_len > max_len or trg_len > max_len or \
+        if src_len == 0 or trg_len == 0 or src_len > max_len or trg_len > max_len or \
                 src_len / trg_len > ratio or trg_len / src_len > ratio:
             continue
         clean_src.append(src_sent)
@@ -41,7 +41,8 @@ def create_batch_itr(src, trg=None, max_tokens=1e9, max_sentences=1e9, shuffle=F
         if num_tokens > max_tokens or len(batch) == max_sentences:
             yield batch
             batch = [idx]
-            max_len = 0
+            max_len = token_len
+            continue
 
         batch.append(idx)
 
