@@ -18,3 +18,6 @@ python main.py preproc [config file]
 python main.py train [config file]
 python main.py test [config file] > /path/to/output/file
 ```
+
+# Reference
+* [Annotated Transformer](http://nlp.seas.harvard.edu/2018/04/03/attention.html)
