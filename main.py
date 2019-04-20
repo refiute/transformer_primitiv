@@ -57,11 +57,12 @@ def train(model, optimizer, config, best_valid):
     epoch = 0
     iteration = 0
     while epoch < max_epoch and iteration < max_iteration:
+        epoch += 1
         g = Graph()
         Graph.set_default(g)
 
         train_itr = create_batch_itr(train_src, train_trg, max_tokens, max_sentences, shuffle=True)
-        train_itr = tqdm(train_itr, desc='train epoch {}'.format(epoch + 1))
+        train_itr = tqdm(train_itr, desc='train epoch {}'.format(epoch))
 
         train_loss = 0.
         itr_loss = 0.
@@ -117,7 +118,7 @@ def train(model, optimizer, config, best_valid):
         g.clear()
         valid_loss = 0.
         valid_itr = create_batch_itr(dev_src, dev_trg, max_tokens, max_sentences, shuffle=False)
-        valid_itr = tqdm(valid_itr, desc='valid epoch {}'.format(epoch + 1))
+        valid_itr = tqdm(valid_itr, desc='valid epoch {}'.format(epoch))
         for batch_ids in valid_itr:
             src_batch = make_batch(dev_src, batch_ids, eos_id)
             trg_batch = make_batch(dev_trg, batch_ids, eos_id)
