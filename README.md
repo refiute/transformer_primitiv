@@ -3,7 +3,8 @@
 [Attention Is All You Need (Vaswani et al., NIPS'17)](https://papers.nips.cc/paper/7181-attention-is-all-you-need.pdf)
 without beam search
 
-it may work.
+it may work.  
+2 stack, 100000 iterations, softmax cross-entropy on WMT En-De → BLEU = 21.46 pt
 
 ## Requirements
 * Python >= 3.4
